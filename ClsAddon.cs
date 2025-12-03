@@ -29,6 +29,7 @@ namespace SBAAddon
         public static SAPbouiCOM.Form form, oForm, targetForm, sbaForm, activeSOForm, soForm = null;
         public static SAPbouiCOM.Matrix oMatrix, Matrix, mtx, sbaMatrix = null;
         private static bool isSOAlreadyOpened = false;
+        private static bool isSQAlreadyOpened = false;
         public static string StatusMessage = "";
         public static int count = 0;
         string _oldValue = "";
@@ -152,6 +153,13 @@ namespace SBAAddon
                     item.Top = oForm.Items.Item("1250000002").Top;
                     item.Height = oForm.Items.Item("1250000002").Height;
                     ((SAPbouiCOM.Button)item.Specific).Caption = "Copy To SO";
+
+                    SAPbouiCOM.Item qItem = oForm.Items.Add("BtnQuot", BoFormItemTypes.it_BUTTON);
+                    qItem.Left = item.Left + item.Width + 10;
+                    qItem.Width = 100;
+                    qItem.Top = item.Top;
+                    qItem.Height = item.Height;
+                    ((SAPbouiCOM.Button)qItem.Specific).Caption = "Copy To SQ";
                 }
 
                 if (pVal.FormTypeEx == "139" && pVal.EventType == SAPbouiCOM.BoEventTypes.et_FORM_LOAD && !pVal.BeforeAction)
@@ -262,7 +270,7 @@ namespace SBAAddon
                 }
                 #endregion
 
-                #region Sales blanket Agreement CopyTO SO   
+                #region Sales blanket Agreement CopyTO SO
                 if (pVal.FormTypeEx == "1250000100" && pVal.ItemUID == "BtnPrint" && (pVal.EventType == SAPbouiCOM.BoEventTypes.et_CLICK || pVal.EventType == SAPbouiCOM.BoEventTypes.et_ITEM_PRESSED) && !pVal.BeforeAction)
                 {
                     try
@@ -395,6 +403,144 @@ namespace SBAAddon
                     {
                         SBO_Application.StatusBar.SetText("Error: " + ex.Message, BoMessageTime.bmt_Short, BoStatusBarMessageType.smt_Error);
                         isSOAlreadyOpened = false;
+                        BubbleEvent = false;
+                    }
+                }
+                #endregion
+
+                #region Sales blanket Agreement CopyTO SQ
+                if (pVal.FormTypeEx == "1250000100" && pVal.ItemUID == "BtnQuot" && (pVal.EventType == SAPbouiCOM.BoEventTypes.et_CLICK || pVal.EventType == SAPbouiCOM.BoEventTypes.et_ITEM_PRESSED) && !pVal.BeforeAction)
+                {
+                    try
+                    {
+                        oForm = SBO_Application.Forms.Item(pVal.FormUID);
+
+                        var cmbStatus = (SAPbouiCOM.ComboBox)oForm.Items.Item("1250000036").Specific;
+                        string docStatus = cmbStatus.Selected?.Value ?? "";
+                        if (docStatus != "A")
+                        {
+                            SBO_Application.StatusBar.SetText("Action not allowed. Document must be Approved.", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Error);
+                            return;
+                        }
+
+                        DateTime endDate = DateTime.ParseExact(((SAPbouiCOM.EditText)oForm.Items.Item("1250000016").Specific).Value, "yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+
+                        if (endDate < DateTime.Today)
+                        {
+                            SBO_Application.StatusBar.SetText("End Date has already passed. Cannot set this date for the sales quotation.", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Error);
+                            return;
+                        }
+                        var cmbBranch = (SAPbouiCOM.ComboBox)oForm.Items.Item("U_BPLId").Specific;
+                        var cmbItemCategory = (SAPbouiCOM.ComboBox)oForm.Items.Item("U_ItemCategory").Specific;
+                        string agreementNo = ((SAPbouiCOM.EditText)oForm.Items.Item("1250000004").Specific).Value;
+                        string bpCode = ((SAPbouiCOM.EditText)oForm.Items.Item("1250000006").Specific).Value;
+
+                        string branchCode = cmbBranch.Selected?.Value ?? "";
+                        string itemCategory = cmbItemCategory.Selected?.Value ?? "";
+
+                        if (string.IsNullOrEmpty(branchCode) || string.IsNullOrEmpty(itemCategory))
+                        {
+                            SBO_Application.StatusBar.SetText("Branch Code and Item Category must be selected before proceeding.", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Error);
+                            return;
+                        }
+                        SAPbouiCOM.Matrix sbaMatrix = (SAPbouiCOM.Matrix)oForm.Items.Item("1250000045").Specific;
+                        DateTime formStartDate = DateTime.ParseExact(((SAPbouiCOM.EditText)oForm.Items.Item("1250000014").Specific).Value, "yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture);
+                        if (isSQAlreadyOpened) return;
+                        isSQAlreadyOpened = true;
+
+                        for (int i = 1; i <= sbaMatrix.RowCount; i++)
+                        {
+                            var chk = (SAPbouiCOM.CheckBox)sbaMatrix.Columns.Item("U_Select").Cells.Item(i).Specific;
+                            if (!chk.Checked) continue;
+                            string itemCode = ((SAPbouiCOM.EditText)sbaMatrix.Columns.Item("1250000001").Cells.Item(i).Specific).Value;
+                            var rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
+                            string qt = $@"SELECT T0.""Number"" AS SBA_No, (T0.""U_INKGS"" - T0.""U_ConInKGS"") AS OpenQty, T0.""StartDate"",  T0.""EndDate"", T0.""TermDate"",T0.""Status"" FROM ""OOAT"" T0 INNER JOIN ""OAT1"" T1 ON T0.""AbsID"" = T1.""AgrNo"" WHERE  T0.""BpCode"" = '{bpCode}' AND T0.""U_ItemCategory"" = '{itemCategory}' AND T0.""U_BPLId"" = '{branchCode}' AND T1.""ItemCode"" = '{itemCode}'  AND (T0.""U_INKGS"" - T0.""U_ConInKGS"") > 0  AND T0.""Status""  = 'A' AND (T0.""TermDate"" IS NULL OR T0.""TermDate"" > CURRENT_DATE)  AND T0.""EndDate"" >= CURRENT_DATE AND CURRENT_DATE BETWEEN T0.""StartDate"" AND COALESCE(T0.""TermDate"", T0.""EndDate"") ORDER BY  T0.""StartDate"" ASC";
+                            rs.DoQuery(qt);
+
+                            if (rs.RecordCount > 0)
+                            {
+                                rs.MoveFirst();
+                                string openSBA = rs.Fields.Item("SBA_No").Value.ToString();
+                                double openQty = Convert.ToDouble(rs.Fields.Item("OpenQty").Value);
+                                DateTime sbaStartDate = Convert.ToDateTime(rs.Fields.Item("StartDate").Value);
+                                DateTime sbaEndDate = Convert.ToDateTime(rs.Fields.Item("EndDate").Value);
+
+                                if (sbaEndDate < DateTime.Today)
+                                {
+                                    SBO_Application.StatusBar.SetText($"Cannot set values to Sales Quotation. SBA {openSBA} ended on {sbaEndDate:yyyy-MM-dd}.", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Error);
+                                    isSQAlreadyOpened = false;
+                                    return;
+                                }
+
+                                if (sbaStartDate <= formStartDate && openQty > 0.0001 && agreementNo != openSBA)
+                                {
+                                    SBO_Application.StatusBar.SetText($"Cannot set values to Sales Quotation. SBA {openSBA} is already open from {sbaStartDate:yyyy-MM-dd}.", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Error);
+                                    isSQAlreadyOpened = false;
+                                    return;
+                                }
+                            }
+                        }
+
+                        SBO_Application.ActivateMenuItem("2048");
+                        SAPbouiCOM.Form sqForm = SBO_Application.Forms.ActiveForm;
+                        if (sqForm.TypeEx != "149")
+                        {
+                            SBO_Application.StatusBar.SetText("Could not open Sales Quotation form.", BoMessageTime.bmt_Short, BoStatusBarMessageType.smt_Error);
+                            isSQAlreadyOpened = false;
+                            return;
+                        }
+
+                        ((SAPbouiCOM.EditText)sqForm.Items.Item("4").Specific).Value = bpCode;
+                        SBO_Application.StatusBar.SetText("Please wait... Data loading in progress", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
+
+                        if (!string.IsNullOrEmpty(branchCode))
+                        {
+                            var sqBranch = (SAPbouiCOM.ComboBox)sqForm.Items.Item("2001").Specific;
+                            sqBranch.Select(branchCode, BoSearchKey.psk_ByValue);
+                        }
+
+                        SAPbouiCOM.Matrix sqMatrix = (SAPbouiCOM.Matrix)sqForm.Items.Item("38").Specific;
+                        try
+                        {
+                            sqForm.Freeze(true);
+                            sqMatrix.Clear();
+                            var dirs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
+                            string di = $@" SELECT *   FROM ""OOAT"" T0  INNER JOIN ""OAT1"" T1 ON T0.""AbsID"" = T1.""AgrNo"" WHERE T0.""Number"" = '{agreementNo}'  AND T0.""BpCode"" = '{bpCode}'   AND T0.""U_ItemCategory"" = '{itemCategory}'  AND T0.""U_BPLId"" = '{branchCode}'  AND T1.""U_Select"" = 'Y'";
+                            dirs.DoQuery(di);
+
+                            int targetRow = 1;
+                            while (!dirs.EoF)
+                            {
+                                if (targetRow > sqMatrix.RowCount)
+                                {
+                                    sqMatrix.AddRow();
+                                }
+                                string itemCode = Convert.ToString(dirs.Fields.Item("ItemCode").Value);
+                                double lineQty = Convert.ToDouble(dirs.Fields.Item("PlanQty").Value);
+                                double actPrice = Convert.ToDouble(dirs.Fields.Item("UnitPrice").Value);
+                                SBO_Application.StatusBar.SetText("Please wait... Data loading in progress", SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
+
+                                ((SAPbouiCOM.EditText)sqMatrix.Columns.Item("1").Cells.Item(targetRow).Specific).Value = itemCode;
+                                ((SAPbouiCOM.EditText)sqMatrix.Columns.Item("1980002193").Cells.Item(targetRow).Specific).Value = agreementNo.Trim();
+                                ((SAPbouiCOM.EditText)sqMatrix.Columns.Item("11").Cells.Item(targetRow).Specific).Value = lineQty.ToString("0.00");
+                                ((SAPbouiCOM.EditText)sqMatrix.Columns.Item("14").Cells.Item(targetRow).Specific).Value = actPrice.ToString("0.00");
+                                targetRow++;
+                                dirs.MoveNext();
+                            }
+
+                            ((SAPbouiCOM.EditText)sqForm.Items.Item("16").Specific).Value = "Origin: Blanket Agreement: " + agreementNo;
+                            isSQAlreadyOpened = false;
+                        }
+                        finally
+                        {
+                            sqForm.Freeze(false);
+                        }
+
+                    }
+                    catch (Exception ex)
+                    {
+                        SBO_Application.StatusBar.SetText("Error: " + ex.Message, BoMessageTime.bmt_Short, BoStatusBarMessageType.smt_Error);
+                        isSQAlreadyOpened = false;
                         BubbleEvent = false;
                     }
                 }
